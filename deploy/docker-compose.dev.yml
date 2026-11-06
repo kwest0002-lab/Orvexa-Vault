@@ -1,0 +1,28 @@
+# Development override for docker-compose.yml
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Bind-mounts application sources and runs the dev servers with hot reload
+# instead of the production build/start commands.
+
+services:
+  backend:
+    build:
+      target: build
+    command: npm run dev
+    volumes:
+      - ${BACKEND_SRC:-../backend}:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+
+  frontend:
+    build:
+      target: build
+    command: npm run dev -- --host 0.0.0.0 --port 8080
+    volumes:
+      - ${FRONTEND_SRC:-../frontend}:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development

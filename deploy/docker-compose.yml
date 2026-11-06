@@ -1,0 +1,226 @@
+# Local full-stack environment: Postgres, backend (+ migrations), frontend and
+# the monitoring stack.
+#
+# The Dockerfiles live in this repo, but the application source lives in the
+# SynapsVault/backend and SynapsVault/frontend repos. Clone them next to this
+# repo (or point BACKEND_SRC / FRONTEND_SRC at them) and run compose from this
+# repo's root directory:
+#
+#   git clone https://github.com/SynapsVault/backend  ../backend
+#   git clone https://github.com/SynapsVault/frontend ../frontend
+#   cp .env.example .env
+#   docker compose up --build
+#
+# Postgres version: local dev runs Postgres 17 to match production (Supabase)
+# and the backup client version used in .github/workflows/backup.yml. Keep
+# these aligned so dumps taken from production restore cleanly into local dev.
+#
+# The monitoring stack (postgres-exporter, prometheus, alertmanager, grafana)
+# is optional and gated behind the `monitoring` profile. Start it with:
+#
+#   docker compose --profile monitoring up --build
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: app_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-app}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - app_network
+
+  # One-shot: applies Drizzle migrations, then exits.
+  migrate:
+    build:
+      context: ${BACKEND_SRC:-../backend}
+      # Dockerfile is resolved relative to the build context, so this works
+      # regardless of the caller's working directory or shell (no ${PWD}).
+      dockerfile: ${DEPLOY_DOCKERFILES_DIR:-../deploy}/backend/Dockerfile
+      target: migrate
+    container_name: app_migrate
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-app}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app_network
+
+  backend:
+    build:
+      context: ${BACKEND_SRC:-../backend}
+      dockerfile: ${DEPLOY_DOCKERFILES_DIR:-../deploy}/backend/Dockerfile
+      target: runtime
+    container_name: app_backend
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-app}
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - app_network
+
+  frontend:
+    build:
+      context: ${FRONTEND_SRC:-../frontend}
+      dockerfile: ${DEPLOY_DOCKERFILES_DIR:-../deploy}/frontend/Dockerfile
+      args:
+        # Inlined into the bundle at build time; the browser calls the backend
+        # directly on its published port.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000}
+        VITE_NETWORK: ${VITE_STELLAR_NETWORK:-testnet}
+    environment:
+      APP_API_URL: ${VITE_API_URL:-http://localhost:3000}
+      APP_NETWORK: ${VITE_STELLAR_NETWORK:-testnet}
+    container_name: app_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - app_network
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+    container_name: app_postgres_exporter
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-app}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app_network
+
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    container_name: app_prometheus
+    restart: unless-stopped
+    environment:
+      # Labels metrics/alerts from this compose stack. Defaults to `local` so
+      # local runs are not mistaken for production; set PROMETHEUS_ENVIRONMENT
+      # (e.g. to `production`) when deploying this stack elsewhere.
+      PROMETHEUS_ENVIRONMENT: ${PROMETHEUS_ENVIRONMENT:-local}
+    profiles:
+      - monitoring
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - app_network
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.2
+    container_name: app_alertmanager
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093"
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9093/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - app_network
+
+  grafana:
+    image: grafana/grafana:13.3.0
+    container_name: app_grafana
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/backend-overview.json:ro
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - app_network
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:
+
+networks:
+  app_network:
+    driver: bridge

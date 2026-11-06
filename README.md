@@ -1,13 +1,59 @@
-# SynapsVault — Deployment Runbook
+# Orvexa-Vault — Soroban Contracts & Deployment Suite
 
-Complete step-by-step guide to go from zero to a live testnet deployment
-ready for SCF Build Award submission.
-
-**Total time: ~3 hours** (mostly waiting for builds/deploys)
+Complete monorepo containing the **Orvexa-Vault** on-chain Soroban smart contracts, deployment automation, and operations runbook for Stellar.
 
 ---
 
-## Overview
+## Repository Structure
+
+The codebase is organized into two primary partitions:
+
+```
+Orvexa-Vault/
+├── contracts/               # Rust Soroban Smart Contracts Workspace
+│   ├── vault-registry/      # On-chain registry for resources, metadata & tags
+│   ├── access-lease/        # Cryptographic access lease grants & verification
+│   ├── subscription/        # Recurring subscriptions and lifecycle manager
+│   ├── common/              # Shared types and utilities
+│   ├── CONTRACTS.md         # Detailed contract interfaces and specifications
+│   └── README.md
+├── deploy/                  # Infrastructure, Orchestration & Runbooks
+│   ├── k8s/                 # Kubernetes / Kustomize manifests (staging & prod)
+│   ├── monitoring/          # Prometheus, Alertmanager & Grafana configurations
+│   ├── overlays/            # Environment-specific overlays
+│   ├── scripts/             # Contract deployment, seeding, backups & rollback
+│   ├── test/                # Test suite for deployment tooling
+│   └── docs/                # Comprehensive operational guides
+├── Cargo.toml               # Root Rust workspace configuration
+└── package.json             # Root deployment scripts & tooling
+```
+
+> **Root Symlinks**: Common paths (`backend`, `frontend`, `k8s`, `monitoring`, `overlays`, `scripts`, `test`, `docs`) are symlinked to `deploy/*` to maintain full backwards compatibility for tooling and CI pipelines.
+
+---
+
+## Quickstart
+
+### 1. Build and Test Smart Contracts
+
+```bash
+# Check compilation across all crates
+cargo check --workspace
+
+# Run complete smart contract test suite (117+ tests)
+cargo test --workspace
+```
+
+### 2. Deployment Tooling & Tests
+
+```bash
+# Run deployment unit test suite
+npm test
+```
+
+---
+
+## Deployment Runbook Overview
 
 ```
 Step 1  Generate keypairs          (5 min)
@@ -24,22 +70,6 @@ Step 10 Record demo video          (30 min)
 
 For local development, production Kubernetes deployment, database rollback,
 and automated contract deployment, see the dedicated sections below.
-
-### Repository layout
-
-This repo holds deployment tooling only; the application code lives in
-[SynapsVault/backend](https://github.com/SynapsVault/backend),
-[SynapsVault/frontend](https://github.com/SynapsVault/frontend) and
-[SynapsVault/contracts](https://github.com/SynapsVault/contracts).
-
-| Path                                        | Contents                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `backend/Dockerfile`, `frontend/Dockerfile` | Image builds (the build context is a checkout of the app repo). Note: both images currently build with `--legacy-peer-deps` because of upstream peer dependency conflicts (`x402-stellar` vs `@stellar/stellar-sdk`) and a missing `package-lock.json` in `SynapsVault/frontend`; override with `--build-arg NPM_FLAGS=` once resolved upstream. |
-| `k8s/`                                      | Kustomize manifests for production                                                                                                                                                                                                                                                                                                               |
-| `scripts/`                                  | Contract deploy/rollback, catalog seeding, smoke test, DB backup/restore/rollback                                                                                                                                                                                                                                                                |
-| `monitoring/`                               | Prometheus, Alertmanager and Grafana config                                                                                                                                                                                                                                                                                                      |
-| `.github/workflows/`                        | CI, image build + K8s deploy, contract deploy, scheduled backups                                                                                                                                                                                                                                                                                 |
-| `test/`                                     | Unit tests for the contract scripts (`npm test`)                                                                                                                                                                                                                                                                                                 |
 
 ---
 
